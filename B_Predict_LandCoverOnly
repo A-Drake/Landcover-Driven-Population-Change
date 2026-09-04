@@ -1,0 +1,98 @@
+##################################################################################################
+# Compute Canada
+# Predict Alternate Scenarios - only landcover changes
+# Climate is held at the 8-year mean; year is 2000
+# Author Anna Drake
+# Date: Aug 4, 2026
+#################################################################################################
+
+require(gbm)
+require(terra)
+require(dplyr)
+require(tidyr)
+
+
+# 1. HPC Setup & Args ----
+args <- commandArgs(trailingOnly = TRUE)
+task_id <- as.numeric(args[1]) 
+
+#Test code ---
+#root <- "C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2"
+
+# Define Paths (Use environment variables or scratch space)
+# On HPC, always use $SCRATCH for high-speed I/O
+root <- "./data/LandChange" 
+out <- "./LandChangeOutputs"
+#dir.create(out, showWarnings = FALSE)
+
+`%notin%` <- Negate(`%in%`)
+
+# Create jobs list ----------------------------------
+jobs<-read.csv(file.path(root,"pending_tasks.csv"))
+#species <- read.csv(file.path(root, "TaskListing.csv"))
+#years <- c(1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020)
+
+# Wrap years in a data frame so merge() works correctly
+#jobs <- merge(species, data.frame(y = years))
+
+# Extract done list cleanly by assigning files first (avoids the stray '.' column)
+#files <- list.files(out, pattern = "\\.tif$")
+
+#tasksdone <- data.frame(
+#  BCR = sub("^([^_]+)_.*", "\\1", files),
+#  Species = sub("^[^_]+_[^_]+_([^_]+)_.*", "\\1", files),
+#  y = as.integer(sub("^.*_([0-9]{4})\\.tif$", "\\1", files)),
+#  stringsAsFactors = FALSE
+#) %>%
+#  unique()
+
+# Files still to do:
+#remainingtasks <- anti_join(jobs, tasksdone, by = c("BCR", "Species", "y"))
+
+# Get task --------------
+current_task <- jobs[task_id, ]
+
+# Extract particular task ----
+spp.i  <- current_task$Species
+bcrn.i <- current_task$BCR
+year.i<- as.numeric(current_task$y)
+
+# Load task elements ---------
+
+# prediction layer ----
+pred.i  <- rast(file.path(root,paste0(bcrn.i,"_LandChangeOnly","_", year.i, ".tif")))
+
+# species model -----------
+load(paste0(root,"/06_bootstraps/", spp.i,"_",bcrn.i,".Rdata"))
+print(paste("loaded",spp.i,"..."))
+
+############################
+# LANDCOVER only ----
+############################
+
+# Reduce to just the required layers----
+
+stack.i <- subset(pred.i, names(pred.i) %in% b.list[[1]]$var.names)
+
+prediction<-list()
+names<-c()
+
+for (j in c(1:32)){ #each bootstrap
+  b.i <- b.list[[j]]
+  
+  #3. Predict----
+  prediction[[j]] <- try(terra::predict(stack.i,b.i, type="response"))
+  if(inherits(prediction[[j]], "try-error")){ return(NULL)}
+  rm("b.i")
+  print(j)
+  names<-c(names,paste0(year.i,"_b",j)) # keep a list of names
+  gc()
+} # end of boots
+
+print(paste0("Done ",year.i,spp.i))
+output<-rast(prediction)
+names(output)<-names
+terra::writeRaster(output, file.path(out, paste0(bcrn.i,"_LandChangeOnly","_", spp.i,"_",year.i,".tif")), overwrite=TRUE)
+rm('output','prediction','names')
+gc()
+###################### END OF JOB ###############################
