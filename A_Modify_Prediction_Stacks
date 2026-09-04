@@ -1,0 +1,122 @@
+###############################################
+# Title: Attributing change on the landscape
+# Author: Anna Drake
+# & using code for V5 written by Elly Knight
+# Rewritten May 29, 2025
+###############################################
+
+# This code: produces artificial landscapes (prediction stacks)
+# where one group of variables (climate, land, or year) is allowed to vary as it did while the remaining variables are static 
+
+terra::tmpFiles(current=T,orphan=T,old=T,remove=T)
+
+# Packages --------
+require(terra)
+require(gbm)
+require(dplyr)
+require(sf)
+
+# Directories -------
+root<-"G:/Shared drives/BAM_NationalModels5" #PC link
+outfolder<-"C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2/"
+
+# Forested BCRs for which we developed indicators -------------------
+Opencov<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/OpenHabitatIndicators.csv")
+bcrlist<-unique(Opencov$BCR)
+
+#1. Partition landscape change by holding annual climate var and year constant (@ the mean):
+
+# ----------------------------------------------
+# Time varying layers
+# ----------------------------------------------
+
+Land<-c("LFbiomass_1km","LFbiomass_5x5","LFcrownclosure_1km","LFcrownclosure_5x5","LFheigth_1km",
+        "LFheigthcv_1km","LFheigth_5x5","LFheigthcv_5x5","SCANFIBalsamFir_1km","SCANFIBalsamFir_5x5",
+        "SCANFIbiomass_1km","SCANFIbiomass_5x5","SCANFIBlackSpruce_1km","SCANFIBlackSpruce_5x5",
+        "SCANFIclosure_1km", "SCANFIclosure_5x5","SCANFIprcC_1km","SCANFIprcC_5x5","SCANFIprcD_1km",  
+        "SCANFIprcD_5x5", "SCANFIDouglasFir_1km","SCANFIDouglasFir_5x5","SCANFIheight_1km",
+        "SCANFIheightcv_1km","SCANFIheight_5x5", "SCANFIheightcv_5x5","SCANFIJackPine_1km",     
+        "SCANFIJackPine_5x5","SCANFILodgepolePine_1km","SCANFILodgepolePine_5x5","SCANFIPonderosaPine_1km",
+        "SCANFIPonderosaPine_5x5","SCANFITamarack_1km","SCANFITamarack_5x5","SCANFIWhiteRedPine_1km", 
+        "SCANFIWhiteRedPine_5x5","RAPTCC_1km","RAPTCC_5x5","CCNL_1km","ABoVE_1km","SCANFI_1km",
+        "VLCE_1km","MODISLCC_5x5","NLCD_1km","MODISLCC_1km","canroad_1km","canroad_5x5")     
+
+
+Clim<-c("ERAMAP_1km","ERAMAT_1km","ERAPPTsmt_1km","ERAPPTsm_1km", 
+        "ERAPPTwt_1km","ERATavesmt_1km","ERATavesm_1km","ERATavewt_1km",
+        "StandardDormancy_1km","StandardGreenup_1km")  
+
+# ----------------------------------------------
+# Time series to modify 
+# ----------------------------------------------
+
+years<-c(1985,1990,1995,2000,2005,2010,2015,2020)
+
+# ----------------------------------------------
+# For each BCR create a mean annual climate for the 1985-2020 period -----
+# ----------------------------------------------
+
+BCRClimAv<-list()
+for (i in c(1:length(bcrlist))){ # start BCR
+s<-list()
+  for (j in c(1:length(years))){ # get all years
+  BCR.i<-paste0(bcrlist[i],"_",years[j],".tif")
+  s[[j]]<-rast(file.path(root,"gis/stacks/",BCR.i))
+  print(years[j])
+  }  # done years
+
+# some BCRs don't have the full climate set get the reduced list -----
+ClimSub<-names(s[[1]])[names(s[[1]]) %in% Clim]
+
+# average annual climate across all years  
+BCRClimAv[[i]] <- mean(
+  s[[1]][[ClimSub]],
+  s[[2]][[ClimSub]],
+  s[[3]][[ClimSub]],
+  s[[4]][[ClimSub]],
+  s[[5]][[ClimSub]],
+  s[[6]][[ClimSub]],
+  s[[7]][[ClimSub]],
+  s[[8]][[ClimSub]],
+    na.rm = TRUE
+  )
+print(i)
+} #done BCR
+
+####################################
+# Only landcover changes ---
+#####################################
+
+# Create new stacks with climate constant and year as 2000
+
+for (i in c(1:length(bcrlist))){ # start BCR
+  bcrlist.i<-bcrlist[i]
+
+for (j in c(1:length(years))){ # get all years
+    year.j<-years[j]
+    BCR.i<-paste0(bcrlist[i],"_",years[j],".tif")
+    landonly<-rast(file.path(root,"gis/stacks/",BCR.i))
+    landonly[["year"]]<-2000 # set year to 2000 as a mid-point with solid data
+    landonly[[names(BCRClimAv[[i]])]]<-BCRClimAv[[i]] # replace climate with multi-year mean
+
+    print(year.j)
+# write out modified raster stack -----
+terra::writeRaster(landonly, file.path(outfolder, paste0(bcrlist.i,"_LandChangeOnly","_", year.j, ".tif")), overwrite=TRUE)
+rm(landonly)
+gc()
+ } # all years (j)
+
+print(bcrlist.i)
+
+} # all BCRS (i)
+
+plot(landonly)
+
+######### END OF STACKS #################
+
+# CREATE JOB LIST
+#Opencov<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/OpenHabitatIndicators.csv")%>%.[,c("BCR","spp")]
+#Conifer<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/ForestConifer_Indicators.csv")%>%.[,c("BCR","spp")]
+#Age<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/ForestAge_Indicators.csv")%>%.[,c("BCR","spp")]
+#species<-rbind(Opencov,Conifer,Age)%>%unique(.)
+#write.csv(species,"AltPredict_SppBCRList.csv")
