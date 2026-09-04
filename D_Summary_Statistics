@@ -1,0 +1,352 @@
+#--------------------------------------------------------------
+# Summarizing landbird data 
+# Anna Drake
+# Sept 4, 2026
+# Script to tally Landcover change only prediction rasters
+#-------------------------------------------------------------
+
+library(terra)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(sf)
+
+# Call Values ------
+years <- seq(1985, 2020, by = 5)
+nboot <- 32
+
+process_species <- function(spp.i, bcr.i,bcrn.i,root2, subbasin.i, tenure.i, watermask.i, distevent.i) {
+    
+    print(paste0("Running ", spp.i, " ", bcrn.i))
+    results <- list()
+    
+    for (yr in years) {
+      
+      print(paste0("Year ", yr))
+      f <- file.path(root2,paste0(bcrn.i, "_LandChangeOnly_", spp.i, "_", yr, ".tif"))
+      
+      if (!file.exists(f)) { warning(paste("Missing:", f))
+        next
+      }
+      
+      r <- rast(f)
+      
+      # Check that there are 32 bootstrap estimates -------------
+      if (nlyr(r) != nboot) {
+        warning(paste0(spp.i, " ", yr," has ", nlyr(r)," layers rather than ", nboot))
+      }
+      
+      # Crop mask and remove water ----------------------------
+      r <- r %>% crop(bcr.i) %>% mask(bcr.i) %>% mask(watermask.i, inverse = TRUE)
+      
+      # ---------------------------------------------------------
+      # 1. WHOLE BCR
+      # ---------------------------------------------------------
+      
+      # Sum abundance across all pixels for each bootstrap ---------
+      bcr_sum <- global(r, fun = "sum", na.rm = TRUE)
+      bcr_n <- global(r[[1]], fun = "notNA")[1, 1]
+      
+      bcr_df <- data.frame(
+        spp = spp.i,
+        YEAR = yr,
+        boot = seq_len(nrow(bcr_sum)),
+        spatial_level = "BCR",
+        spatial_id = as.character(bcrn.i),
+        total_pixels = bcr_n,
+        abundance = bcr_sum[, 1]
+      )
+      print("done BCR stats")
+      
+      # ---------------------------------------------------------
+      # 2. SUBBASIN
+      # ---------------------------------------------------------
+      
+      sub_sum <- terra::extract(r,subbasin.i,fun = sum,na.rm = TRUE)
+      
+      sub_npix <- terra::extract(!is.na(r[[1]]),subbasin.i,fun = sum,na.rm = TRUE) %>%
+        rename(spatial_id = subbasin.i[[1]],total_pixels = 2)%>% mutate(spatial_id = as.character(spatial_id))
+      
+      sub_df <- sub_sum %>%
+        rename(spatial_id = subbasin.i[[1]]) %>%
+        pivot_longer(
+          cols = -spatial_id,
+          names_to = "boot",
+          values_to = "abundance"
+        ) %>%
+        mutate(
+          spp = spp.i,
+          YEAR = yr,
+          spatial_level = "subbasin",
+          spatial_id = as.character(spatial_id),
+          boot =  rep(seq_len(nlyr(r)), times = nrow(sub_sum))
+        ) %>%
+        left_join(
+          sub_npix,
+          by = "spatial_id"
+        ) %>%
+        select(
+          spp, 
+          YEAR, 
+          boot,
+          spatial_level, 
+          spatial_id,
+          abundance, 
+          total_pixels
+        )
+      
+      print("done Subbasin stats")
+      
+      
+      # ---------------------------------------------------------
+      # 2. Forest Management Unit
+      # ---------------------------------------------------------
+      
+      FMU_sum <- terra::extract(r,FMU.i,fun = sum,na.rm = TRUE)
+      
+      FMU_npix <- terra::extract(!is.na(r[[1]]),FMU.i,fun = sum,na.rm = TRUE) %>%
+        rename(spatial_id = FMU.i[[1]],total_pixels = 2)%>% mutate(spatial_id = as.character(spatial_id))
+      
+      FMU_df <- sub_sum %>%
+        rename(spatial_id = FMU.i[[1]]) %>%
+        pivot_longer(
+          cols = -spatial_id,
+          names_to = "boot",
+          values_to = "abundance"
+        ) %>%
+        mutate(
+          spp = spp.i,
+          YEAR = yr,
+          spatial_level = "FMU",
+          spatial_id = as.character(spatial_id),
+          boot =  rep(seq_len(nlyr(r)), times = nrow(sub_sum))
+        ) %>%
+        left_join(
+          sub_npix,
+          by = "spatial_id"
+        ) %>%
+        select(
+          spp, 
+          YEAR, 
+          boot,
+          spatial_level, 
+          spatial_id,
+          abundance, 
+          total_pixels
+        )
+      
+      print("done Forest Management Unit stats")
+      
+      
+      # ---------------------------------------------------------
+      # 3. TENURE
+      # ---------------------------------------------------------
+      
+      tenure_sum <- terra::zonal(r, tenure.i,fun = "sum",na.rm = TRUE)
+      
+      tenure_npix <- terra::zonal(!is.na(r[[1]]), tenure.i,fun = "sum",na.rm = TRUE)%>%
+        rename(spatial_id = 1,total_pixels = 2)%>% mutate(spatial_id = as.character(spatial_id))
+      
+      tenure_df <- tenure_sum %>%
+        rename(spatial_id = 1) %>%
+        pivot_longer(
+          cols = -spatial_id,
+          names_to = "boot",
+          values_to = "abundance"
+        ) %>%
+        mutate(
+          spp = spp.i,
+          YEAR = yr,
+          spatial_level = "Tenure",
+          spatial_id = as.character(spatial_id),
+          boot = rep(seq_len(nlyr(r)), times = nrow(tenure_sum))
+        ) %>%
+        left_join(
+          tenure_npix,
+          by = "spatial_id"
+        ) %>%
+        select(
+          spp, 
+          YEAR, 
+          boot,
+          spatial_level, 
+          spatial_id,
+          abundance, 
+          total_pixels
+        )
+      
+      print("done Tenure stats")
+      
+      # ---------------------------------------------------------
+      # 4. Disturbance history
+      # ---------------------------------------------------------
+    
+      type_year_sum <- terra::zonal(r,distevent.i,fun = "sum",na.rm = TRUE)
+      
+      type_year_npix <- terra::zonal(!is.na(r[[1]]),distevent.i, fun = "sum",na.rm = TRUE) %>%
+        rename(zone = 1, total_pixels = 2)
+
+     type_year_df <- type_year_sum %>%
+        rename(zone = 1) %>%
+        pivot_longer(
+          cols = -zone,,
+          names_to = "boot",
+          values_to = "abundance"
+        ) %>%
+        mutate(   
+          spp = spp.i,
+          YEAR = yr,
+          boot = rep(seq_len(nlyr(r)), times = nrow(type_year_sum)),
+          spatial_level = "Disturbance",
+          val  = zone %/% 100000,
+          Event_Type = val %/% 10000,
+          Event_YR = val %% 10000,
+          spatial_id = as.character(zone)
+        ) %>%
+        left_join(
+          type_year_npix,
+          by = "zone"
+        ) %>%
+        select(
+          spp,
+          YEAR,
+          boot,
+          spatial_level,
+          Event_Type,
+          Event_YR,
+          spatial_id,
+          abundance,
+          total_pixels
+        )
+      
+     print("done Disturbance stats")
+# --------------------------------------------------------- 
+# Combine the four spatial summaries 
+# ---------------------------------------------------------
+     
+        results[[as.character(yr)]] <- bind_rows(
+          bcr_df,
+          sub_df,
+          FMU_df,
+          tenure_df,
+          type_year_df
+        )
+        
+        print(paste0("done ",yr))
+    }
+    
+    bind_rows(results) 
+
+}
+
+########## end of function #####################3
+
+#---------------------------------------------------
+# Get summary data 
+#---------------------------------------------------
+
+##---------------------------------------------------------------------------------
+#root <- "G:/Shared drives/BAM_NationalModels5"
+#root2 <-"C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2"
+root <-"./data"
+root2 <-"./LandChangeOutputs"
+root3 <-"./LandChangeSummary"
+##---------------------------------------------------------------------------------
+
+# HPC Setup & Args --------------
+args <- commandArgs(trailingOnly = TRUE)
+task_id <- as.numeric(args[1]) 
+
+# Extract job list ------------------
+#files to process:
+tasks<- list.files(root2) %>%
+  data.frame(BCR = sub("^([^_]+)_.*", "\\1", .),
+             spp = sub("^[^_]+_[^_]+_([^_]+)_.*", "\\1", .),
+             stringsAsFactors = FALSE)%>%
+             .[2:3]%>%unique()
+  
+#files already processed:
+tasksdone<- list.files(root3) %>% 
+  data.frame( BCR = sub("^[^_]+_([^_]+)_([^_]+)\\.csv$", "\\1", .),
+              spp = sub("^[^_]+_([^_]+)_([^_]+)\\.csv$", "\\2", .),
+              stringsAsFactors = FALSE) %>%
+              .[2:3]%>%unique()
+
+#files still to do:
+remainingtasks <- anti_join(tasks, tasksdone, by = c("BCR", "spp"))
+
+# Get task --------------
+current_task <- remainingtasks[task_id, ]
+
+# Get current species and BCR --------------
+bcrn.i<-current_task$BCR
+spp.i<-current_task$spp
+
+#--------------------------------------
+# Check that all prediction layers are there? If not, stop the process -----
+#--------------------------------------
+ck <- list.files(file.path(root2))%>%.[. %like% paste0(bcrn.i, "_LandChangeOnly_", spp.i, "_")]
+      
+if (length(ck)!=8) {warning(paste("Only", length(ck), "year layers for ",spp.i, " in ",bcrn.i)
+ stop()
+  }
+#--------------------------------------     
+      
+#--------------------------------------
+# Bring in Spatial components
+#--------------------------------------
+
+# Get BCR extent --------------------
+can <- read_sf(file.path(root,"CAN_adm0.shp")) |> #"Regions", "CAN_adm",
+  st_transform(crs=crs("EPSG:5072")) # Canadian boundary
+
+bcr<- read_sf(file.path(root,"BAM_BCR_NationalModel.shp")) |> #, "Regions"
+  st_transform(crs=crs("EPSG:5072"))|> st_intersection(can)
+
+bcr$subUnit<-paste0("can",bcr$subUnit)
+bcr.i<-bcr%>%filter(subUnit==bcrn.i)
+
+# Prepare all remaining layers to this BCR extent ------------
+
+# Watermask -----------
+watermask.i<-read_sf(file.path(root,"water5072.shp"))%>% #2, "gis"
+  st_crop(bcr.i)%>%st_intersection(bcr.i)%>% st_make_valid() %>% filter(!st_is_empty(.))
+
+# Watersheds --------
+wshed.i<-read_sf(file.path(root,"Level8AllCanadaWatersheds.shp"))%>% #2, "gis"
+  st_crop(bcr.i)%>%st_intersection(bcr.i)%>% st_make_valid() %>% filter(!st_is_empty(.))
+
+# FMU --------
+FMU.i<-read_sf(file.path(root,"National_FMU2.shp"))%>% st_transform(crs=crs("EPSG:5072"))%>%#2, "gis"
+  st_crop(bcr.i)%>%st_intersection(bcr.i)%>% st_make_valid() %>% filter(!st_is_empty(.))
+  
+# Tenure layer ----------
+tenure.i<-rast(file.path(root,"LandTenure1k.tif"))%>%crop(bcr.i)%>%mask(bcr.i) %>% mask(watermask.i, inverse = TRUE) #2
+
+# Events ----
+distevent.i<-rast(file.path(root,"DisturbanceEvents.tif"))%>%crop(bcr.i)%>%mask(bcr.i) %>% mask(watermask.i, inverse = TRUE) #2
+
+#------------------------------------
+# Now run summary for spp.i and bcr.i:
+#------------------------------------
+
+  out <- process_species(
+    spp.i = spp.i,
+    bcrn.i=bcrn.i,
+    bcr.i = bcr.i,
+    root2 = root2,
+    subbasin.i = wshed.i,
+    tenure.i = tenure.i,
+    watermask.i = watermask.i,
+    distevent.i = distevent.i
+  )
+  
+  out$BCR = bcrn.i # add BCR
+  
+print("done summary...saving....")
+
+# Write out the outputs -------- 
+  
+write.csv(out,file.path(root3,paste0("SummaryStats_", bcrn.i, "_", spp.i, ".csv")),row.names = FALSE)
+
+########## End of Code #################
