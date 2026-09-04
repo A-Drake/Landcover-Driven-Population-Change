@@ -1,5 +1,6 @@
 ###############################################
 # Title: Attributing change on the landscape
+# Isolating Landcover drivers 
 # Author: Anna Drake
 # & using code for V5 written by Elly Knight
 # Rewritten May 29, 2025
@@ -57,7 +58,7 @@ years<-c(1985,1990,1995,2000,2005,2010,2015,2020)
 # ----------------------------------------------
 
 BCRClimAv<-list()
-for (i in c(1:length(bcrlist))){ # start BCR
+for (i in c(1:length(bcrlist))){ # start BCR.i
 s<-list()
   for (j in c(1:length(years))){ # get all years
   BCR.i<-paste0(bcrlist[i],"_",years[j],".tif")
@@ -81,13 +82,14 @@ BCRClimAv[[i]] <- mean(
     na.rm = TRUE
   )
 print(i)
-} #done BCR
+} #done BCR.i
 
-####################################
-# Only landcover changes ---
-#####################################
-
+##################################################
+# Create stacks where only landcover changes ---
+##################################################
+# ----------------------------------------------
 # Create new stacks with climate constant and year as 2000
+# ----------------------------------------------
 
 for (i in c(1:length(bcrlist))){ # start BCR
   bcrlist.i<-bcrlist[i]
@@ -95,11 +97,12 @@ for (i in c(1:length(bcrlist))){ # start BCR
 for (j in c(1:length(years))){ # get all years
     year.j<-years[j]
     BCR.i<-paste0(bcrlist[i],"_",years[j],".tif")
-    landonly<-rast(file.path(root,"gis/stacks/",BCR.i))
+    landonly<-rast(file.path(root,"gis/stacks/",BCR.i)) # import prediction stack for year.j
     landonly[["year"]]<-2000 # set year to 2000 as a mid-point with solid data
     landonly[[names(BCRClimAv[[i]])]]<-BCRClimAv[[i]] # replace climate with multi-year mean
 
     print(year.j)
+
 # write out modified raster stack -----
 terra::writeRaster(landonly, file.path(outfolder, paste0(bcrlist.i,"_LandChangeOnly","_", year.j, ".tif")), overwrite=TRUE)
 rm(landonly)
@@ -109,8 +112,6 @@ gc()
 print(bcrlist.i)
 
 } # all BCRS (i)
-
-plot(landonly)
 
 ######### END OF STACKS #################
 
