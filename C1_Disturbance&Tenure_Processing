@@ -1,0 +1,309 @@
+########################################################################################
+# Processing Tenure, CanLAD layers and pre-CanLAD layers for Landcover change
+# by Anna Drake
+# Sept 4, 2026
+# Luc Guindon Lab attribution 2025 (https://opendata.nfis.org/mapserver/nfis-change_eng.html) -----
+################################################################################################
+# Notes:
+#CanLAD 
+#The data is split into three sets of rasters:
+#1)  Latest Disturbances canlad_1985_2025_latest_type_v1_1_20260508.tif
+#1= Wildfire
+#2= Harvesting (and other human-induced disturbances)
+#3= Other disturbances (windthrow, partial harvesting, landslide, wildfire not confirmed by NBAC)
+#4= Water extension
+#5= Defoliation and Harvesting
+#6= Low severity defoliation
+#7= Medium severity defoliation	
+#8= High severity defoliation
+
+#* canlad_1985_2025_latest_ending_year_v1_1_20260508.tif
+#Value from 1985 to 2025
+#no data = Not disturbed or Ongoing Disturbance
+
+# preCanlad Pixel values are disturbance type:
+#2 = Fire
+#3 = Harvest
+#4 = Insect
+
+# preCanLaD_disturbanceYear_v2_20251126.tif 
+#Pixel values are disturbance year:
+#1950-1984 = years
+#999 = unknown (user should convert this value to 1955)
+
+###############################################################
+# ----------------------------------------------------------
+# Load packages 
+# ----------------------------------------------------------
+require(terra)
+require(sf)
+
+# Clean workspace ---------------------------
+terra::tmpFiles(current=T,orphan=T,old=T,remove=T)
+
+# Get directories ------------------------------------
+input<-root <- "C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2"
+root2 <- "G:/Shared drives/BAM_NationalModels5"
+
+# Template used for V5 prediction layers:
+rast1k <- rast(nrows=4527, ncols=7300, xmin=-4100000, xmax=3200000, ymin=1673000, ymax=6200000, crs = "EPSG:5072")
+
+# ----------------------------------------------------------
+# Shapefiles
+# ----------------------------------------------------------
+
+can <- read_sf(file.path(root2, "Regions", "CAN_adm", "CAN_adm0.shp")) |> 
+  st_transform(crs=crs("EPSG:5072")) # Canadian boundary
+
+bcr<- read_sf(file.path(root2, "Regions","BAM_BCR_NationalModel.shp")) |>
+  st_transform(crs=crs("EPSG:5072"))|> st_intersection(can)
+bcr$subUnit<-paste0("can",bcr$subUnit)
+
+lakes<- read_sf(file.path(input,"WaterMask_Canada.shp"))
+
+# ----------------------------------------------------------
+# CanLad layers 1985-2025
+# ----------------------------------------------------------
+# Year ---
+dST<-rast(file.path(input,"Disturbance","canlad_1985_2025_latest_start_year_v1_1_20260508.tif"))
+# Type ----
+dTyp<-rast(file.path(input,"Disturbance","canlad_1985_2025_latest_type_v1_1_20260508.tif"))
+dTyp <- subst(dTyp, from = c(7,8), to = 6) # make defoliation all one class regardless of intensity
+
+# ----------------------------------------------------------
+# Get pre-canLad layer 
+# ----------------------------------------------------------
+# Disturbance year ----------
+pdST<-rast(file.path(input,"Disturbance","preCanlad_disturbanceYear_v2_20251126.tif"))
+# Type ----
+pdTyp<-rast(file.path(input,"Disturbance","preCanlad_disturbanceType_v2_20251126.tif"))
+
+# preCanlad Pixel values are disturbance type:
+#2 = Fire
+#3 = Harvest
+#4 = Insect
+
+# Align coding with CanLad -----
+pdTyp <- subst(pdTyp, from = c(2, 3, 4), to = c(1, 2, 6))
+
+# Fill any blanks in dType with pdTyp to get latest disturbance 1965-2025 -----
+sharedType <- cover(dTyp, pdTyp)
+sharedTime <- cover(dST, pdST)
+
+#No-disturbance should count so add in as 999 -----
+sharedType_na <- subst(sharedType, from=NA, to=999)
+
+#Unknown disturbance date - following data recommendations -> 1955
+sharedTime<- subst(sharedTime, from =999, to =1955)
+sharedTime_na <- subst(sharedTime, from=NA, to=999)
+
+# remove NA values out of boundary and anything in water ------
+canp <-can|> st_transform(crs=crs(sharedType_na)) # Canadian boundary
+lakes<-lakes|> st_transform(crs=crs(sharedType_na)) # water bodies
+
+sharedType_na<-sharedType_na%>%mask(canp)%>%mask(lakes, inverse=T)
+sharedTime_na<-sharedTime_na%>%mask(canp)%>%mask(lakes, inverse=T)
+
+# Save files -------------
+writeRaster(sharedType_na,file.path(input,"CombinedDisturbanceType_na.tif"))
+writeRaster(sharedTime_na,file.path(input,"CombinedDisturbanceDate_na.tif"))
+
+sharedType_na<-rast(file.path(input,"CombinedDisturbanceType_na.tif"))
+sharedTime_na<-rast(file.path(input,"CombinedDisturbanceDate_na.tif"))
+
+# Make 1km with mode *but need to match* how the data was derived for SCANFI in V5 (bilinear of closest 4 pixels) -----------------------
+
+sharedType_na1k <- terra::project(sharedType_na,rast1k, method="near", mask = FALSE)
+sharedTime_na1k <- terra::project(sharedTime_na,rast1k, method="near", mask = FALSE)
+
+# Save out ----
+writeRaster(sharedType_na1k,file.path(input,"CombinedDisturbanceType1k.tif"))
+writeRaster(sharedTime_na1k,file.path(input,"CombinedDisturbanceTime1k.tif"))
+
+#----------------------------------------------
+# Now Land Tenure (2020 layer) 
+#----------------------------------------------
+# https://storymaps.arcgis.com/stories/52b71ae81a4e4ccba5771a42c2a32b25
+
+Tenure<- rast(file.path(root,"Canada_MFv2020", "Canada_MFv2020.tif"))
+
+# Project using same approach for V5 prediction layers -----
+Tenure_1k <- terra::project(Tenure,rast1k, method="near", mask = FALSE)
+
+# Mask ---
+Tenure_1k<-Tenure_1k %>%mask(sharedTime_na1k)
+
+# Save out ---
+writeRaster(Tenure_1k,file.path(input,"LandTenure1k.tif"), overwrite=T)
+
+#----------------------------------------------
+# Do we want 5 km rasters?
+#----------------------------------------------
+# Focal mode
+
+get_mode <- function(x, ...) {
+  x <- x[!is.na(x)]
+  
+  if (length(x) == 0) {
+    return(NA_integer_)
+  }
+  
+  tab <- table(x)
+  as.integer(names(tab)[which.max(tab)])
+}
+
+
+# "Regional" class: copying V5 approach so not really a good quantification but matches outputs ------- 
+#disttime5k<-terra::focal(sharedTime_na1k,w=matrix(1,5,5),fun=get_mode,na.rm=TRUE) #get 5k average at 1k resolution
+#disttype5k<-terra::focal(sharedType_na1k,w=matrix(1,5,5),fun=get_mode,na.rm=TRUE) #get 5k average at 1k resolution
+#Tenure_5k<-terra::focal(Tenure_1k,w=matrix(1,5,5),fun=get_mode,na.rm=TRUE) #get 5k average at 1k resolution
+
+# Mask 
+#Tenure_5k<-Tenure_5k %>%mask(sharedTime_na1k)
+
+# Save out ---
+# writeRaster(disttime5k,file.path(input,"CombinedDisturbanceTime5k.tif"), overwrite=T)
+# writeRaster(disttype5k,file.path(input,"CombinedDisturbanceType5k.tif"),overwrite=T)
+# writeRaster(Tenure_5k,file.path(input,"LandTenure5k.tif"), overwrite=T)
+
+########################################################################################
+# -------------------------------------------------------
+# Disturbance event layer with type-year coding
+# -------------------------------------------------------
+#######################################################################################
+
+# For interpretation we don't want pixel-level values but total effects of disturbance "events" - i.e. 
+# sum predictions over the disturbance footprint to calculate the effect of e.g. fire A in 1989 as opposed to fire B in 1990
+
+# We therefore need to ID contiguous patches of events e.g. the whole fire footprint -
+# and use this for tallying. Disturbance is patchy so allow 2km gaps within-events using a buffer to merge footprint
+# (logging harvest/same fire event) and then bring back to actual area with a mask 
+
+# this is very computationally heavy so code keeps rasters out of direct memory ---------------
+
+# -------------------------------------------------------
+# Create a disturbance event ID to summarize outputs
+# CanLAD disturbance type + year
+# ------------------------------------------------------------
+
+# Code no-disturbance as 0 ---------------------
+CanType <- rast(file.path(root, "CombinedDisturbanceType1k.tif"))
+CanType <- subst(CanType, from = 999, to = 0)
+
+CanTime <- rast(file.path(root, "CombinedDisturbanceTime1k.tif"))
+CanTime <- subst(CanTime, from = 999, to = 0)
+
+# Ensure agreement ------------------------
+CanTime[CanType == 0] <- 0
+CanType[CanTime == 0] <- 0
+
+# ------------------------------------------------------------
+# Create type-year ID
+# ------------------------------------------------------------
+
+# Use the original type and time directly -------------
+TypeYear <- CanType * 10000 + CanTime
+
+# Keep only disturbance types of interest (harvest, fire, insect and insect + harvest) --------------
+TypeYear <- ifel(CanType %in% c(1, 2, 5, 6), TypeYear,NA)
+
+# Write to disk and remove -----
+TypeYear_file <- file.path(root2, "CanLAD_TypeYear.tif")
+
+writeRaster(TypeYear,TypeYear_file,datatype = "INT4S",overwrite = TRUE)
+rm(TypeYear)
+gc()
+
+# bring in without loading ----
+TypeYear <- rast(TypeYear_file)
+
+# ------------------------------------------------------------
+# Unique type-year combinations
+# ------------------------------------------------------------
+
+freq_tab <- freq(TypeYear)
+unique_ids <- freq_tab$value
+unique_ids <- unique_ids[!is.na(unique_ids)]
+max(freq_tab$count) # 100,000 is a safe multiplier 
+
+# ------------------------------------------------------------
+# Prepare output directory
+# ------------------------------------------------------------
+
+event_dir <- file.path(root,"CanLAD_Event_Temp")
+dir.create(event_dir,showWarnings = FALSE,recursive = TRUE)
+
+# ------------------------------------------------------------
+# Process each Type × Year
+# ------------------------------------------------------------
+
+# add focal window for bridging <2km gaps in contiguous events -------
+gap_window <- matrix(1,nrow = 5,ncol = 5)
+
+for (i in seq_along(unique_ids)) {
+  
+  val <- unique_ids[i]
+  
+  message("\n")
+  message("Processing at", round(i/length(unique_ids),2),"% : ", val)
+  
+  # ----------------------------------------------------------
+  # Limit to Type × Year
+  # ----------------------------------------------------------
+  mask <- ifel(TypeYear == val,1,NA)
+  
+  # ----------------------------------------------------------
+  # Confirm there is data, else skip ---
+  # ----------------------------------------------------------
+  
+  n_cells <- global(!is.na(mask),"sum",na.rm = TRUE)[1, 1]
+  
+  if (is.na(n_cells) || n_cells == 0) {message("No cells -- skipping")
+    rm(mask)
+    next
+  }
+  
+  # ----------------------------------------------------------
+  # Crop to extent of disturbances to save memory
+  # ----------------------------------------------------------
+  
+  mask <- trim(mask)
+
+  # Bridge gaps ----------
+  buffered <- focal(mask,w = gap_window,fun = "max",na.rm = TRUE,na.policy = "all")
+
+  # Identify contiguous patches --------
+  p <- patches(buffered,directions = 8,allowGaps = TRUE)
+
+  # Limit to detected disturbance cells ----------
+  patch_masked_file <- file.path(event_dir,paste0("patches_masked_", val, ".tif"))
+  p <- mask(p,mask,filename = patch_masked_file,overwrite = TRUE)
+
+  rm(mask, buffered)
+  gc()
+  
+  # Make ID unique by disturbance event -----
+  p <- p + val*100000
+  event_file <- file.path(event_dir,paste0("events_",val,".tif"))
+  writeRaster(p,event_file,datatype = "INT8S",overwrite = TRUE)
+  rm(p)
+  gc()
+  
+} # end of all event-dates
+
+# ----------------------------------------------------------
+# Get all event files and merge 
+# ----------------------------------------------------------
+
+event_files <- list.files(event_dir,pattern = "^events_[0-9]+\\.tif$",full.names = TRUE)
+events <- do.call(merge,lapply(event_files, rast))
+
+# ----------------------------------------------------------
+# write out final file 
+# ----------------------------------------------------------
+
+writeRaster(events,file.path(root,"DisturbanceEvents.tif"),datatype = "INT8S",overwrite = TRUE)
+# Note: includes post 2020 disturbance - probably best to remove post-hoc as history unknown and shouldn't be considered undisturbed
+
+
+############# End of code ##################### 
