@@ -1,0 +1,244 @@
+#--------------------------------------------------------------------------
+# Sample undisturbed baseline - to standardize disturbance
+# Anna Drake
+# Sept 8, 2026
+#--------------------------------------------------------------------------
+# Code extracts density predictions from 1000 BCR pixels that are undisturbed according to CanLAD
+# Samples pixels climatically within +-2.5C (MAT) and 10% rainfall (MAP) of the specific disturbance conditions
+# Additionally, a more restrictive subset only selects old forest pixels (>80years)
+# This should standardize disturbance curves against what we predict density is in a climatically similar undisturbed patch 
+# Column reports the available pixels to sample - possibly informative - are undisturbed sites of similar state rare or common?
+
+require(terra)
+require(sf)
+require(data.table)
+require(dplyr)
+require(tidyr)
+
+root <-"./data"
+root2 <-"./LandChangeOutputs"
+root3 <-"./LandChangeSummary"
+
+# Load required information ---------------
+# Canada ----
+can <- read_sf(file.path(root,"CAN_adm0.shp")) %>% 
+  st_transform(crs=5072) # Canadian boundary
+# BCRs ----
+bcr<- read_sf(file.path(root,"BAM_BCR_NationalModel.shp")) %>%
+  st_transform(crs=5072)|> st_crop(can)%>% st_intersection(can)
+
+bcr$subUnit<-paste0("can",bcr$subUnit)
+
+# Disturbance events -------------------
+diste<-rast(file.path(root,"DisturbanceEvents.tif"))
+#val <- CanType * 10000 + CanTime
+#p <- p + val*100000  # so code 1198102016 == 2016th fire event(1) in 1981
+
+# Areas categorized as undisturbed and are 2km from a disturbance ----------
+# >=10% forest that is outside a disturbance event 80yrs --------
+sample80<-rast(file.path(root,"UndisturbedForest80Plus.tif"))
+sample80<-ifel(sample80==0,NA,1)
+
+# >=10% forest that is outside a disturbance event any age --------
+sampleall<-rast(file.path(root,"UndisturbedForestAnyAge.tif"))
+sampleall<-ifel(sampleall==0,NA,1)
+
+# Get climate normals ----------
+rain<-rast(file.path(root,"PPTsm_1km.tif"))  
+temp<-rast(file.path(root,"MAT_1km.tif"))  
+
+print("imported sampling area, normals, and events")
+
+# 1. HPC Setup & Args ----
+args <- commandArgs(trailingOnly = TRUE)
+task_id <- as.numeric(args[1]) 
+
+# Get species list --------------
+print("get species list")
+
+# Extract job list ------------------
+
+jobs<-read.csv(file.path("./jobtracking", "AllJobsLandcover.csv"))
+jobs <- jobs %>%
+  mutate(y = as.numeric(y)) %>% 
+  select(BCR, species, y) %>%
+  distinct()
+      
+#files already processed:
+filelist <- list.files(root3) %>% .[. %like% "Events80yrBaseline_"] 
+
+ tasksdone<-data.frame(filename =filelist, stringsAsFactors = FALSE) %>%
+    tidyr::extract(
+    col = filename, 
+    into = c("type","BCR","spp","y"), 
+    regex = "^([^_]+)_([^_]+)_([^_]+)_([0-9]+)\\..*$", 
+    remove = TRUE
+  ) %>%
+  mutate(y = as.numeric(y)) %>% 
+  select(BCR, spp, y) %>%
+  distinct()
+
+#files still to do:
+remainingtasks <- anti_join(jobs, tasksdone, by = c("BCR","species"="spp","y"))
+
+if (nrow(remainingtasks) == 0) {
+  print("All tasks are already completed.")
+  quit(save = "no")
+}
+
+# Get task --------------
+current_task <- remainingtasks[task_id, ]
+
+# Extract particular task ----
+spp.i  <- current_task$species
+bcrn.i <- current_task$BCR
+year.i<- as.numeric(current_task$y)
+
+# GEt BCR boundary -------------
+bcr.i<-subset(bcr,bcr$subUnit==bcrn.i)
+
+# Abundance layer - mask to disturbance area -----------    
+layer1<-rast(file.path(root2,paste0(bcrn.i,"_LandChangeOnly_",spp.i,"_",year.i,".tif")))%>%crop(bcr.i)%>%mask(bcr.i) 
+     # Check that there are 32 bootstrap estimates, else skip -------------
+if (nlyr(layer1)<32) {
+   stop(paste0(spp.i, " ", year.i," has only ", nlyr(layer1)," boots"))
+}
+
+print(paste0("imported ",bcrn.i," ", spp.i, " abundance data"))  
+
+# Subset region -----------------  
+temp.i<-temp%>%crop(bcr.i)%>%mask(bcr.i)
+rain.i<-rain%>%crop(bcr.i)%>%mask(bcr.i)
+diste.i<-diste%>%crop(bcr.i)%>%mask(bcr.i)%>%crop(temp.i)
+sampleall.i<-sampleall%>%crop(bcr.i)%>%mask(bcr.i)%>%crop(diste.i)
+sample80.i<-sample80%>%crop(bcr.i)%>%mask(bcr.i)%>%crop(diste.i)
+
+#ensure agreement --------
+temp.i<-crop(temp.i,diste.i)
+rain.i<-crop(rain.i,diste.i)
+
+# Get unique event IDs (ignoring NA)
+event_ids <- terra::unique(diste.i)[, 1]
+event_ids <- event_ids[!is.na(event_ids)]
+
+# Create a data frame to store results
+result80 <- list()
+resultsAll <- list()
+
+# Extract baseline values for each event....
+
+for (i in seq_along(event_ids)) {
+  print(round(i/length(event_ids),2))
+  
+  id <- event_ids[i]
+
+  # 1. Isolate the current event pixels and set everything else to NA
+  ev_rast <- subst(diste.i, id, 1)
+  ev_rast[ev_rast != 1] <- NA
+
+  
+  # Climate values  
+  temp.e<-ev_rast*temp.i
+  rain.e<-ev_rast*rain.i
+  
+#Mean climate at disturbance
+temp.m<-global(temp.e,"mean",na.rm=T)%>%unlist()
+rain.m<-global(rain.e,"mean",na.rm=T)%>%unlist()
+
+# 1. Temperature Mask (Within +/- 5 degrees of the mean) # narrowed to 2.5
+tempmask <- ifel(temp.i > (temp.m + 2.5) | temp.i < (temp.m - 2.5), 0, 1)
+# 2. Rainfall Mask (Within +/- 20% of the mean) #narrowed to 10%
+rainmask <- ifel(rain.i < (rain.m * 0.9) | rain.i > (rain.m * 1.1), 0, 1)
+
+# 3. Combine both climate and disturbance masks 
+Undist80 <- tempmask * rainmask * sample80.i
+UndistAll <- tempmask * rainmask * sampleall.i
+
+# Pull out cells in BCR that meet this criteria - all are at least 2km from a disturbance
+eligible80 <- which(values(Undist80) == 1)
+eligibleAll <- which(values(UndistAll) == 1)
+
+# Old forest baseline ----------
+  # 4. Randomly sample eligible pixels and calculate the total spp count
+  if (length(eligible80) > 0) {
+    
+    # Get sample and record sample size 1000 or minimum available -------
+    n_samp <- min(1000, length(eligible80))
+    sampled_cells <- sample(eligible80, size = n_samp, replace = FALSE)
+    
+    # Extract values from species layer -------------
+    sampled_vals <- values(layer1)[sampled_cells, , drop = FALSE]
+    
+    # 5. Calculate sum from each bootstrap
+    layer_sum <- colSums(sampled_vals, na.rm = TRUE)
+    
+    # 6. Build a data frame tracking event ID, layer number, layer name, and mean
+    result80[[i]] <- data.frame(
+      event_id = id,
+      boot = 1:nlyr(layer1),
+      Base80_sumab = layer_sum,
+      Base80_n_samp = n_samp,
+      Base80_avail2samp = length(eligible80)
+    )
+   rm(eligible80,layer_sum, sampled_vals, n_samp)
+   gc() 
+    
+  }
+  # All forest baseline ----------
+  
+  if (length(eligibleAll) > 0) {
+    
+    # Get sample and record sample size 1000 or minimum available -------
+    n_samp <- min(1000, length(eligibleAll))
+    sampled_cells <- sample(eligibleAll, size = n_samp, replace = FALSE)
+    
+    # Extract values from species layer -------------
+    sampled_vals <- values(layer1)[sampled_cells, , drop = FALSE]
+    
+    # 5. Calculate sum from each bootstrap
+    layer_sum <- colSums(sampled_vals, na.rm = TRUE)
+    
+    # 6. Build a data frame tracking event ID, layer number, layer name, and mean
+    resultsAll[[i]] <- data.frame(
+      event_id = id,
+      boot = 1:nlyr(layer1),
+      BaseAll_sumab = layer_sum,
+      BaseAll_n_samp = n_samp,
+      BaseAll_avail2samp = length(eligibleAll)
+    )
+   rm(eligibleAll, layer_sum, sampled_vals, n_samp)
+   gc() 
+    
+  } 
+  
+print(id)  
+rm(id, ev_rast, temp.e, temp.m, rain.e, rain.m, tempmask, rainmask, Undist80,UndistAll)  
+}  # finished all ID
+
+
+# Combine all event data frames into a single long-format table ------------
+result80 <- result80[!sapply(result80, is.null)]
+result80df <- do.call(rbind,result80)
+
+resultsAll <- resultsAll[!sapply(resultsAll, is.null)]
+resultsAlldf <- do.call(rbind,resultsAll)
+
+# Get a density estimate ----------
+resultsAlldf$BaseAll_dens<-resultsAlldf$BaseAll_sumab/resultsAlldf$BaseAll_n_samp
+result80df$Base80_dens<-result80df$Base80_sumab/result80df$Base80_n_samp
+
+# Add columns ----------------
+resultsAlldf<-resultsAlldf%>%mutate(spp=spp.i,bcr=bcrn.i,year=year.i)
+result80df<-result80df%>%mutate(spp=spp.i,bcr=bcrn.i,year=year.i)
+
+rownames(resultsAlldf) <- NULL
+rownames(result80df) <- NULL
+
+rm(resultsAll,result80)
+gc()
+
+write.csv(result80df, file.path(root3,paste0("Events80yrBaseline_", bcrn.i,"_",spp.i,"_", year.i,".csv")))
+write.csv(resultsAlldf, file.path(root3,paste0("EventsAllyrBaseline_", bcrn.i,"_",spp.i,"_",year.i,".csv")))
+print("done extraction")
+
+##### end of Script ##################
