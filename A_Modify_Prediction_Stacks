@@ -114,10 +114,3 @@ print(bcrlist.i)
 } # all BCRS (i)
 
 ######### END OF STACKS #################
-
-# CREATE JOB LIST
-#Opencov<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/OpenHabitatIndicators.csv")%>%.[,c("BCR","spp")]
-#Conifer<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/ForestConifer_Indicators.csv")%>%.[,c("BCR","spp")]
-#Age<-read.csv("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Indicator_Species/ForestAge_Indicators.csv")%>%.[,c("BCR","spp")]
-#species<-rbind(Opencov,Conifer,Age)%>%unique(.)
-#write.csv(species,"AltPredict_SppBCRList.csv")
