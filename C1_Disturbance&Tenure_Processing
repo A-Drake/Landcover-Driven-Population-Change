@@ -152,20 +152,6 @@ get_mode <- function(x, ...) {
   as.integer(names(tab)[which.max(tab)])
 }
 
-
-# "Regional" class: copying V5 approach so not really a good quantification but matches outputs ------- 
-#disttime5k<-terra::focal(sharedTime_na1k,w=matrix(1,5,5),fun=get_mode,na.rm=TRUE) #get 5k average at 1k resolution
-#disttype5k<-terra::focal(sharedType_na1k,w=matrix(1,5,5),fun=get_mode,na.rm=TRUE) #get 5k average at 1k resolution
-#Tenure_5k<-terra::focal(Tenure_1k,w=matrix(1,5,5),fun=get_mode,na.rm=TRUE) #get 5k average at 1k resolution
-
-# Mask 
-#Tenure_5k<-Tenure_5k %>%mask(sharedTime_na1k)
-
-# Save out ---
-# writeRaster(disttime5k,file.path(input,"CombinedDisturbanceTime5k.tif"), overwrite=T)
-# writeRaster(disttype5k,file.path(input,"CombinedDisturbanceType5k.tif"),overwrite=T)
-# writeRaster(Tenure_5k,file.path(input,"LandTenure5k.tif"), overwrite=T)
-
 ########################################################################################
 # -------------------------------------------------------
 # Disturbance event layer with type-year coding
