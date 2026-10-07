@@ -1,5 +1,8 @@
 ########################################################################################
-# Processing Tenure, CanLAD layers and pre-CanLAD layers for Landcover change
+# 1) Processing Tenure, CanLAD layers and pre-CanLAD layers for Landcover change
+# 2) Extracting and IDing individual disturbance events from CanLAD/pre-CanLAD
+# 3) Extracting baseline undisturbed area based on buffered CanLAD/pre-CanLAD with 
+#    additional forest cover and age restriction
 # by Anna Drake
 # Sept 4, 2026
 # Luc Guindon Lab attribution 2025 (https://opendata.nfis.org/mapserver/nfis-change_eng.html) -----
@@ -61,9 +64,12 @@ bcr$subUnit<-paste0("can",bcr$subUnit)
 
 lakes<- read_sf(file.path(input,"WaterMask_Canada.shp"))
 
+########################################################################################
 # ----------------------------------------------------------
-# CanLad layers 1985-2025
+# 1 A) CanLad layers 1985-2025
 # ----------------------------------------------------------
+########################################################################################
+
 # Year ---
 dST<-rast(file.path(input,"Disturbance","canlad_1985_2025_latest_start_year_v1_1_20260508.tif"))
 # Type ----
@@ -120,9 +126,11 @@ sharedTime_na1k <- terra::project(sharedTime_na,rast1k, method="near", mask = FA
 writeRaster(sharedType_na1k,file.path(input,"CombinedDisturbanceType1k.tif"))
 writeRaster(sharedTime_na1k,file.path(input,"CombinedDisturbanceTime1k.tif"))
 
+########################################################################################
 #----------------------------------------------
-# Now Land Tenure (2020 layer) 
+# 1 B) Now Land Tenure (2020 layer) 
 #----------------------------------------------
+########################################################################################
 # https://storymaps.arcgis.com/stories/52b71ae81a4e4ccba5771a42c2a32b25
 
 Tenure<- rast(file.path(root,"Canada_MFv2020", "Canada_MFv2020.tif"))
@@ -154,7 +162,7 @@ get_mode <- function(x, ...) {
 
 ########################################################################################
 # -------------------------------------------------------
-# Disturbance event layer with type-year coding
+# 2) Disturbance event layer with type-year coding
 # -------------------------------------------------------
 #######################################################################################
 
@@ -289,7 +297,39 @@ events <- do.call(merge,lapply(event_files, rast))
 # ----------------------------------------------------------
 
 writeRaster(events,file.path(root,"DisturbanceEvents.tif"),datatype = "INT8S",overwrite = TRUE)
-# Note: includes post 2020 disturbance - probably best to remove post-hoc as history unknown and shouldn't be considered undisturbed
+# Note: includes post 2020 disturbance - possibly best to remove post-hoc as history unknown and shouldn't be considered undisturbed
 
+########################################################################################
+#---------------------------------------------------------------------------
+# 3) ID undisturbed areas within BCR - including undisturbed old forest
+# All at least 2km from a disturbance
+#---------------------------------------------------------------------------
+########################################################################################
 
-############# End of code ##################### 
+# Binary disturbance event layer --------------
+# This uses TypeYear *without* removing disturbance types - i.e. from line 191
+distd<-ifel(distbi==0,1,NA) #disturbance
+buffered_raster <- buffer(distd, width = 2000)%>%as.numeric()%>%mask(.,distbi)  # try to get sites 2k from a disturbance to remove influence
+
+distbi<-ifel(buffered_raster=1,0,1) # not disturbed =1
+
+# Was the area forested in 1985 -------------------
+forest85<-rast(file.path(root2,"PredictionRasters","Biomass","SCANFI","1km","SCANFIclosure_1km_1985.tif"))
+fbi<-ifel(forest85>=10,1,0)%>%crop(distbi)# 1 = treed
+nbarea<-fbi*distbi  # not disturbed and treed=1
+
+# at least 80 years old and 10% cover and undisturbed ------------------
+forestAge<-rast(file.path(root,"Land_Age1km.tif"))
+oldfor<-ifel(forestAge>=80,1,0)
+oldfor<-crop(oldfor,nbarea)
+nbarea<-crop(nbarea,oldfor)
+oldundi<-oldfor*nbarea
+
+# Save layers ----------------------------------
+writeRaster(oldundi,file.path(root,"UndisturbedForest80Plus.tif"),datatype = "INT8S",overwrite = TRUE)
+writeRaster(nbarea,file.path(root,"UndisturbedForestAnyAge.tif"),datatype = "INT8S",overwrite = TRUE)
+
+# ----------------------------------------------------------
+# End of code
+# ----------------------------------------------------------
+
