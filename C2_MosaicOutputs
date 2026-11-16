@@ -1,0 +1,89 @@
+########################################
+# C2_Mosaic all Group layers together
+# Uses new terra::blend in buffer
+# Anna Drake
+# Nov 2, 2026
+#######################################
+library(terra)
+library(sf)
+library(dplyr)
+library(data.table)
+library(purrr)
+
+out<-"./SummedRastersLandchange"
+out2<-"./CanadaMosaics"
+root2 <- "./data"
+
+print("Buffering BCRS...")
+# Buffered BCR -----------------------------
+bcr <- read_sf(file.path(root2, "BAM_BCR_NationalModel.shp")) %>% 
+  st_transform(crs = 5072) # Canadian boundary Albers Equal Area
+bcr$subUnit<-paste0("can",bcr$subUnit) 
+bcr<-st_buffer(bcr, dist=100000) 
+
+# BCRS -----------------------------
+bcrn <-c("can5","can9","can10","can12","can13","can14",
+           "can40","can41","can60","can61","can70",
+           "can71","can72","can80","can81","can82")
+           
+# GROUPS  -----------------------------
+
+GrpNames<-c("Very old forest","Old forest","Mature forest",
+            "Young forest","Conifer forest","Mixedwood forest",
+            "Deciduous forest","Low Cover","All Forest","All Species")
+
+# YEARS -----------------------------
+#y<-c(1985,1990,1995,2000,2005,2010,2015,2020)
+y<-c(1985,1990,1995,2000)
+
+jobs <- expand.grid(Group=c(1:length(GrpNames)), y = y)
+print(paste0(nrow(jobs), " jobs"))
+
+# HPC Setup & Args --------------
+args <- commandArgs(trailingOnly = TRUE)
+task_id <- as.numeric(args[1]) 
+
+print(paste0("Getting job", task_id))
+currentjob<-jobs[task_id,]
+
+# ID job -------------------
+stack.i<-GrpNames[as.numeric(currentjob$Group)]
+yr.i<-currentjob$y
+
+print(stack.i)
+print(yr.i)
+
+f <- list.files(out) %>% .[. %like% yr.i] %>% .[. %like% stack.i] # subset of species
+print(paste0("Importing",length(f), "BCRs"))
+bcrn <- sub("_.*", "", f)
+
+raster_list<-list()
+
+# trim to the buffer to deal with inappropriate 0s ----
+
+for(j in c(1:length(bcrn))){
+bcrn.j<-bcrn[j]
+print(bcrn.j)
+buf<-subset(bcr,bcr$subUnit==bcrn.j)
+
+#Trim --------------
+bf<-f%>% .[. %like% bcrn.j]
+rast1<-rast(file.path(out, bf))%>%crop(buf)%>%mask(buf)
+raster_list[[j]] <- rast1
+rm(rast1,bf,buf,bcrn.j)
+gc()
+}
+
+print("Mosaicing each layer with mean for overlap.....")
+src_collection <- sprc(raster_list)
+rm(raster_list); gc()
+
+print("Blending boundaries...")
+mosaicked_raster <- terra::mosaic(src_collection, fun = "blend") #native blending
+rm(src_collection); gc()
+ 
+writeRaster(mosaicked_raster, file.path(out2,paste0("CanadaWide_",yr.i,"_",stack.i,".tiff")))
+print("Done!")         
+
+####### END OF SCRIPT #################
+# Should run proofing script that gets the global BCR counts for each species by year and checks that they are in every year - so change isn't a missing raster x species layer
