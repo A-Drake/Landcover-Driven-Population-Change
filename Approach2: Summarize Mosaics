@@ -1,0 +1,430 @@
+#--------------------------------------------------------------
+# Summarizing landbird data - 2nd approach with Mosaics
+# Anna Drake
+# Nov 1, 2026
+# Script to tally Landcover change only prediction rasters
+#-------------------------------------------------------------
+
+library(terra)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(sf)
+library(data.table)
+
+# Call Values ------
+#years <- seq(1985, 2020, by = 5)
+years <- c(1990, 2020)
+nboot <- 32
+
+#--------------------------------------------------------------------------------
+# Function to summarize rasters across different land-divisions/conditions
+#--------------------------------------------------------------------------------
+
+process_species <- function(can, bcr.i, spp.i,mask,root2, wshed.i, wshed10.i, tenure.i, watermask.i, FMU.i, distevent.i) {
+
+    
+    print(paste0("Running ", spp.i))
+
+    results <- list()
+    
+    for (yr in years) {
+      
+      print(paste0("Year ", yr))
+      f <- file.path(root2,paste0(spp.i, "_", yr, ".tif"))
+      
+# Check if file exists, else skip (redundant with the year check) ---------------------
+   if (!file.exists(f)) { stop(paste("Missing:", f))
+   }
+      
+     # Import if does --------------- 
+      r.i <- rast(f) # prediction outputs
+    
+# Check that there are 32 bootstrap estimates, else skip -------------
+   if (nlyr(r.i) != nboot) {
+   stop(paste0(spp.i, " ", yr, " has ", nlyr(r.i), " layers rather than ", nboot))
+   }
+      
+      # Crop, mask, and remove water ----------------
+      r <- r.i %>%crop(mask) %>% mask(vect(watermask.i), inverse = TRUE) %>%mask(mask)
+      
+      # Binary raster for sample size (excluding water) ----------------
+      r_valid <- ifel(is.na(r[[1]]), 0, 1) %>% crop(mask)%>% mask(mask)
+      
+      # ---------------------------------------------------------
+      # 1. WHOLE CANADA
+      # ---------------------------------------------------------
+      
+      # Sum abundance across all pixels for each bootstrap ---------
+      can_sum <- global(r, fun = "sum", na.rm = TRUE)
+      can_n <- global(r_valid, fun = "sum", na.rm = TRUE)
+      
+      can_df <- data.frame(
+        spp = spp.i,
+        YEAR = yr,
+        boot = seq_len(nrow(can_sum)),
+        spatial_level = "Canadawide",
+        spatial_id = "CanadaSppExtent",
+        total_pixels = can_n[, 1],
+        abundance = can_sum[, 1]
+      )
+      
+rm(can_sum,can_n)
+gc()
+      print("done Canada stats")
+            
+      # ---------------------------------------------------------
+      # 2. BCR summary
+      # ---------------------------------------------------------
+      if (nrow(bcr.i) > 0) { # conditional on data existing -----
+      bc_vals <- terra::extract(r, bcr.i, fun = sum, na.rm = TRUE)    
+      bc_npix <- terra::extract(r_valid, bcr.i, fun = sum, na.rm = TRUE) # sum pixels with valid ----
+      sub_map <- data.frame(ID = 1:nrow(bcr.i), spatial_id = as.character(bcr.i$subUnit))
+       
+     bcr_df <- bc_vals %>%
+        left_join(sub_map, by = "ID") %>%
+        select(-ID) %>%
+        pivot_longer(cols = -spatial_id, names_to = "boot_name", values_to = "abundance") %>%
+        left_join(
+          data.frame(ID = 1:nrow(bcr.i), total_pixels = bc_npix[, 2]) %>% 
+          left_join(sub_map, by = "ID") %>% select(-ID),
+          by = "spatial_id"
+        ) %>%
+        group_by(spatial_id) %>%
+        mutate(spp = spp.i, YEAR = yr, spatial_level = "BCR", boot = row_number()) %>%
+        ungroup() %>%
+        select(spp, YEAR, boot, spatial_level, spatial_id, abundance, total_pixels)
+        
+rm(bc_vals,bc_npix)
+gc()
+        
+      } else {
+  print("No BCRs in this region. Skipping BCR stats.")
+  bcr_df <- data.frame() # Empty placeholder
+}
+print("done BCR stats")
+
+      
+      # ---------------------------------------------------------
+      # 2. SUBBASIN
+      # ---------------------------------------------------------
+      if (nrow(wshed.i) > 0) { # conditional on data existing -----
+      w_vals <- terra::extract(r, wshed.i, fun = sum, na.rm = TRUE)    
+      w_npix <- terra::extract(r_valid, wshed.i, fun = sum, na.rm = TRUE) # sum pixels with valid ----
+      sub_map <- data.frame(ID = 1:nrow(wshed.i), spatial_id = as.character(wshed.i$HYBAS_ID))
+       
+     sub_df <- w_vals %>%
+        left_join(sub_map, by = "ID") %>%
+        select(-ID) %>%
+        pivot_longer(cols = -spatial_id, names_to = "boot_name", values_to = "abundance") %>%
+        left_join(
+          data.frame(ID = 1:nrow(wshed.i), total_pixels = w_npix[, 2]) %>% 
+          left_join(sub_map, by = "ID") %>% select(-ID),
+          by = "spatial_id"
+        ) %>%
+        group_by(spatial_id) %>%
+        mutate(spp = spp.i, YEAR = yr, spatial_level = "subbasin", boot = row_number()) %>%
+        ungroup() %>%
+        select(spp, YEAR, boot, spatial_level, spatial_id, abundance, total_pixels)
+        
+rm(w_vals,w_npix)
+gc()
+        
+      } else {
+  print("No subbasins found in this region. Skipping subbasin stats.")
+  sub_df <- data.frame() # Empty placeholder
+}
+print("done Subbasin stats")
+
+
+      
+      # ---------------------------------------------------------
+      # 3. SUBBASIN 10
+      # ---------------------------------------------------------
+      if (nrow(wshed10.i) > 0) { # conditional on data existing -----
+      w10_vals <- terra::extract(r, wshed10.i, fun = sum, na.rm = TRUE)    
+      w10_npix <- terra::extract(r_valid, wshed10.i, fun = sum, na.rm = TRUE) # sum pixels with valid ----
+      sub10_map <- data.frame(ID = 1:nrow(wshed10.i), spatial_id = as.character(wshed10.i$HYBAS_ID))
+       
+     sub10_df <- w10_vals %>%
+        left_join(sub10_map, by = "ID") %>%
+        select(-ID) %>%
+        pivot_longer(cols = -spatial_id, names_to = "boot_name", values_to = "abundance") %>%
+        left_join(
+          data.frame(ID = 1:nrow(wshed10.i), total_pixels = w10_npix[, 2]) %>% 
+          left_join(sub10_map, by = "ID") %>% select(-ID),
+          by = "spatial_id"
+        ) %>%
+        group_by(spatial_id) %>%
+        mutate(spp = spp.i, YEAR = yr, spatial_level = "subbasin_Lev10", boot = row_number()) %>%
+        ungroup() %>%
+        select(spp, YEAR, boot, spatial_level, spatial_id, abundance, total_pixels)
+        
+rm(w10_vals,w10_npix)
+gc()
+        
+      } else {
+  print("No subbasins found in this region. Skipping subbasin stats.")
+  sub10_df <- data.frame() # Empty placeholder
+}
+print("done Subbasin stats")
+
+# ---------------------------------------------------------
+# 4. Forest Management Unit - split by BCR so in patches
+# ---------------------------------------------------------
+      if (nrow(FMU.i) > 0) {
+      e_vals <- terra::extract(r, FMU.i, fun = sum, na.rm = TRUE)
+      e_npix <- terra::extract(r_valid, FMU.i, fun = sum, na.rm = TRUE)# sum pixels with valid ---- 
+      fmu_map <- data.frame(ID = 1:nrow(FMU.i), spatial_id = as.character(FMU.i$FMU_Nam))
+      
+# Aggregate e_vals by spatial_id while keeping all bootstrap columns
+val_summary <- e_vals %>%
+    left_join(fmu_map, by = "ID") %>%
+    select(-ID) %>%
+    group_by(spatial_id) %>%
+    summarise(across(everything(), \(x) sum(x, na.rm = TRUE)), .groups = "drop")
+  
+# Aggregate total pixels uniquely by spatial_id
+  pixel_summary <- data.frame(ID = 1:nrow(FMU.i), total_pixels = e_npix[, 2]) %>%
+    left_join(fmu_map, by = "ID") %>%
+    group_by(spatial_id) %>%
+    summarise(total_pixels = sum(total_pixels, na.rm = TRUE), .groups = "drop")
+    
+  FMU_df <- val_summary %>%
+    pivot_longer(cols = -spatial_id, names_to = "boot_name", values_to = "abundance") %>%
+    left_join(pixel_summary, by = "spatial_id") %>%
+    group_by(spatial_id) %>%
+    mutate(spp = spp.i, YEAR = yr, spatial_level = "FMU", boot = row_number()) %>%
+    ungroup() %>%
+    select(spp, YEAR, boot, spatial_level, spatial_id, abundance, total_pixels)
+
+  rm(e_vals, e_npix, val_summary, pixel_summary)
+  gc()
+
+ } else {
+  print("No FMUs found in this region. Skipping FMU stats.")
+  FMU_df <- data.frame() # Empty placeholder
+}
+
+
+print("done Forest Management Unit stats")
+      
+      
+      # ---------------------------------------------------------
+      # 5. TENURE
+      # ---------------------------------------------------------
+      
+      tenure_sum <- terra::zonal(r, tenure.i,fun = "sum",na.rm = TRUE)
+      
+      tenure_npix <- terra::zonal(r_valid, tenure.i,fun = "sum",na.rm = TRUE)%>%
+        rename(spatial_id = 1,total_pixels = 2)%>% mutate(spatial_id = as.character(spatial_id))
+      
+      tenure_df <- tenure_sum %>%
+        rename(spatial_id = 1) %>%
+        pivot_longer(
+          cols = -spatial_id,
+          names_to = "boot",
+          values_to = "abundance"
+        ) %>%
+        mutate(
+          spp = spp.i,
+          YEAR = yr,
+          spatial_level = "Tenure",
+          spatial_id = as.character(spatial_id),
+          boot = rep(seq_len(nlyr(r)), times = nrow(tenure_sum))
+        ) %>%
+        left_join(
+          tenure_npix,
+          by = "spatial_id"
+        ) %>%
+        select(
+          spp, 
+          YEAR, 
+          boot,
+          spatial_level, 
+          spatial_id,
+          abundance, 
+          total_pixels
+        )
+     
+     rm(tenure_sum,tenure_npix)
+     gc()
+      
+      print("done Tenure stats")
+      
+  
+# --------------------------------------------------------- 
+# Combine the FIVE spatial summaries 
+# ---------------------------------------------------------
+     
+        results[[as.character(yr)]] <- bind_rows(
+          can_df,
+          bcr_df,
+          sub_df,
+          sub10_df,
+          FMU_df,
+          tenure_df
+        )
+        
+        print(paste0("done ",yr))
+    }
+    
+    final_results <-bind_rows(results) 
+    rm(can_df, bcr_df, sub_df,FMU_df,tenure_df)
+    gc()
+    
+    # Explicitly return the data frame
+    return(final_results)
+}
+
+########## end of function #####################3
+
+#---------------------------------------------------
+# Get summary data 
+#---------------------------------------------------
+
+##---------------------------------------------------------------------------------
+#root <- "G:/Shared drives/BAM_NationalModels5"
+#root2 <-"C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2"
+root <-"./data"
+root2 <-"./LandChangeOutputs/TruncatedMosaic"
+root3 <-"./LandChangeSummary"
+##---------------------------------------------------------------------------------
+
+# HPC args --------------
+args    <- commandArgs(trailingOnly = TRUE)
+task_id <- as.integer(args[1])
+
+# Stable job list (sorted so task_id -> species never changes) ----
+Indicators<-read.csv(file.path(root,"IndicatorSpecies_Drake_etal_CJFR.csv")) %>%
+subset(.,.$Class!=".") %>%
+subset(.,.$scale=="200m" & .$S>0.4055)%>% pull(species) %>% unique()
+jobs <- Indicators
+
+if (is.na(task_id) || task_id < 1 || task_id > length(jobs)) {
+  message("task_id ", task_id, " outside 1..", length(jobs), "; nothing to do.")
+  quit(save = "no", status = 0)
+}
+spp.i <- jobs[task_id]
+print(paste("Task", task_id, "->", spp.i))
+
+# Skip if already summarised --------------
+out_file <- file.path(root3, paste0("SummaryStatsMosaic_", spp.i, ".csv"))
+if (file.exists(out_file)) {
+  message("Already done: ", out_file)
+  quit(save = "no", status = 0)
+}
+
+#----------------------------------------------------------------------
+# Check that all prediction years are there? If not, stop the process
+#----------------------------------------------------------------------
+ 
+      s <- list.files(root2)%>%
+      .[. %like% spp.i]
+      
+      # Check if file exists, else skip ---------------------
+      if (length(s)<2) { stop(sprintf("Too few files (%d/2) for spp: %s. Aborting.", length(s), spp.i))
+      }
+rm(s)
+gc()
+     
+#--------------------------------------
+# Bring in Spatial components
+#--------------------------------------
+print("importing species extent")
+
+# get the mosaic extent
+paths <- file.path(root2,paste0(spp.i, "_1990.tif"))
+extent<- rast(paths)|>mean(na.rm=T)
+e_valid <- ifel(!is.na(extent), 1, NA)
+
+mask <- as.polygons(e_valid, dissolve = TRUE) |> 
+  st_as_sf()
+
+mask <- st_make_valid(mask)   # right after you build mask
+
+# Function for clipping extents ---------
+clip_to_mask <- function(x) {
+  x |> st_make_valid() |> st_buffer(0) |>   # fix bad rings
+    st_crop(mask) |> st_intersection(mask) |>
+    st_make_valid() |> dplyr::filter(!st_is_empty(geometry))
+}
+  
+rm(extent,e_valid)
+
+# Get BCR extent --------------------
+can <- read_sf(file.path(root,"CAN_adm0.shp")) |> #"Regions", "CAN_adm",
+  st_transform(crs=5072) # Canadian boundary
+
+bcr<- read_sf(file.path(root,"BAM_BCR_NationalModel.shp")) |> #, "Regions"
+  st_transform(crs=5072)|> st_intersection(can)
+
+bcr$subUnit<-paste0("can",bcr$subUnit)
+
+print("masking bcr to species extent")
+
+bcr.i<-bcr |> clip_to_mask()
+gc()
+print("done importing BCRs")
+
+#-----------------------------------------
+# Prepare all layers to this BCR extent 
+#-----------------------------------------
+# Watermask -----------
+print("starting water layer import")
+
+watermask.i<-read_sf(file.path(root,"water5072.shp")) %>%
+  st_crop(mask) %>%   #2, "gis"  #st_intersection(can)%>% 
+  st_make_valid() %>% filter(!st_is_empty(.))
+
+print("done water layer import")
+
+# Watersheds level 8 --------
+wshed.i<-read_sf(file.path(root,"Level8AllCanadaWatersheds.shp"))|> clip_to_mask() # source is Hydrobasin for arctic and North America
+
+# Watersheds level 10 --------
+wshed10.i<-read_sf(file.path(root,"Canadian_Level10_5072.shp"))|> clip_to_mask()
+
+# FMU --------
+FMU.i<-read_sf(file.path(root,"FMU_5072.shp"))|> clip_to_mask()
+
+# Tenure layer ----------
+tenure.i<-rast(file.path(root,"LandTenure1k.tif")) %>% 
+ crop(vect(mask)) %>% 
+ mask(vect(watermask.i), inverse = TRUE) %>% mask(vect(mask))
+
+print("done importing layers")
+
+# Events ----
+#distevent.i<-rast(file.path(root,"DisturbanceEvents.tif"))%>%crop(bcr.i)%>%mask(bcr.i) %>% mask(vect(watermask.i), inverse =TRUE) #2
+
+#------------------------------------------
+# Now run summary for spp.i and bcr.i:
+
+print("starting summary stats...")
+
+  out <- process_species(
+    can=can,
+    mask=mask,
+    bcr.i=bcr.i,
+    spp.i = spp.i,
+    root2 = root2,
+    wshed.i = wshed.i,
+    wshed10.i = wshed10.i,
+    tenure.i = tenure.i,
+    watermask.i = watermask.i,
+    FMU.i=FMU.i
+  )%>% as.data.frame()
+ 
+ # Add columns --------------
+  
+ out$dens <-out$abundance/out$total_pixels
+ 
+print("done summary...saving....")
+
+#---------------------------------------
+# Write out the outputs 
+#---------------------------------------  
+write.csv(out,file.path(root3,paste0("SummaryStatsMosaic_", spp.i, ".csv")),row.names = FALSE)
+
+########## End of Code #################
