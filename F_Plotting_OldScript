@@ -30,15 +30,15 @@ require(scico)
 # Directories
 # ---------------------------------------
 
-root<-"C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2/Test5_61_81"
-setwd("C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2/")
+root<-"XXXXXXXXXXXX/Desktop/Partitioning Change2/Test5_61_81"
+setwd("XXXXXXXXXXXX/Desktop/Partitioning Change2/")
 
 #----------------------------
 # View outputs
 # ------------------------------
 
-root1<-"C:/Users/andrake/OneDrive - NRCan RNCan/Desktop/Partitioning Change2"
-root2 <-"G:/Shared drives/BAM_NationalModels5"
+root1<-"XXXXXXXXXXXXXXXXXXXXXXXXXX/Partitioning Change2"
+root2 <-"XXXXXXXXXXXXXXXXXXXX/BAM_NationalModels5"
 list.files(root)
 
 ##----------------------------------
