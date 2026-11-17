@@ -1,9 +1,8 @@
 #-----------------------------
-# Organize outputs of
-# Landcover only change analysis
-# Test run for BCR 8.1
+# Plot Landcover-only change analysis
+# By indicators
 # Anna Drake
-# Sept 10,2026
+# Nov 17,2026
 #-----------------------------
 require(sf)
 require(terra)
@@ -30,43 +29,42 @@ require(scico)
 # Directories
 # ---------------------------------------
 
-root<-"XXXXXXXXXXXX/Desktop/Partitioning Change2/Test5_61_81"
-setwd("XXXXXXXXXXXX/Desktop/Partitioning Change2/")
+root<-"XXXXXXXX/Partitioning Change2/Test5_61_81"
+setwd("XXXXXXXXXXX/Partitioning Change2/")
 
 #----------------------------
 # View outputs
 # ------------------------------
 
-root1<-"XXXXXXXXXXXXXXXXXXXXXXXXXX/Partitioning Change2"
-root2 <-"XXXXXXXXXXXXXXXXXXXX/BAM_NationalModels5"
+root1<-"XXXXXXXXXXXXXXXXXXX/Partitioning Change2"
+root2 <-"XXXXXXXXXXXXXXX/BAM_NationalModels5"
 list.files(root)
 
 ##----------------------------------
 ## GIS data
 ## ---------------------------------
+
 # Canada ----------
 can <- read_sf(file.path(root1, "gis", "CAN_adm0.shp")) |> 
   st_transform(crs=5072) # Canadian boundary
 
-
-#BCR ------------
+# BCR ------------
 bcr<- read_sf(file.path(root1, "gis","BAM_BCR_NationalModel_Unbuffered_Canada.shp")) |>
   st_transform(crs=5072)
 bcr$subUnit<-paste0("can",bcr$subUnit)
 
-#Lakes & Rivers -----------
+# Lakes & Rivers -----------
 Lakes<-read_sf(file.path(root1,"rivers_and_lakes_shapefile","NA_Lakes_and_Rivers","data","lakes_p","northamerica_lakes_cec_2023_v4.shp"))
 Lakes<-Lakes%>%st_transform(crs=5072)
 River<-read_sf(file.path(root1,"rivers_and_lakes_shapefile","NA_Lakes_and_Rivers","data","rivers_l","northamerica_rivers_cec_2023_v4.shp"))
 River<-River%>%st_transform(crs=5072)
 
 # Watersheds --------
-w8<-read_sf(file.path(root1, "gis","Level8AllCanadaWatersheds.shp"))
-w10<-read_sf(file.path(root1, "gis", "Canadian_Level10_5072.shp"))
+w8<-read_sf(file.path(root1, "gis","Level8AllCanadaWatersheds.shp"))%>%st_make_valid(.)
+w10<-read_sf(file.path(root1, "gis", "Canadian_Level10_5072.shp"))%>%st_make_valid(.)
 
-
-# Need to check indicator cut off BCCH as old in BCR10?
-# Find out why BCR 10 is so distinctive
+w8_bcr<-st_join(w8, bcr, largest = TRUE)  # assign watersheds to BCR based on degree of overlap
+w10_bcr<-st_join(w10, bcr, largest = TRUE) # assign watersheds to BCR based on degree of overlap
 
 # FMU --------
 FMU<-read_sf(file.path(root1,"NationalFMU_Layer","FMU_5072.shp"))
@@ -74,6 +72,11 @@ FMU<-read_sf(file.path(root1,"NationalFMU_Layer","FMU_5072.shp"))
 # Prov --------
 prov <- read_sf(file.path(root1, "gis", "Simplified_Prov_Bounds.shp")) |> 
   st_transform(crs=5072) # Canadian boundary
+
+
+###################################
+# Plotting materials
+###################################
 
 # background --------------
 
@@ -109,147 +112,310 @@ scico(12, palette = "vik") # increase needs a 5 fold larger range
 vik2<-scico(11, palette = "vik") %>%rev()
 vik3<-rev(c("#001260","#013678","#095B90","#4088AE","#89B7CD","#D1E0E8","#EBD2C4", "#D9A587", "#C77B50","#B04F1B", "#811F06", "#590007"))
 
+#####################
 # Create breaks 
-#inner  <- c(-20,-15,-10,-5,-1,0,1,5,10,15,20) # per species
-inner  <- c(-280,-140,-70,-30,-15,0,15,30,70,140,280) # species sum
-all_breaks <- c(-Inf, inner, Inf)
-#bin_labels <- c("< -20",paste0(head(inner, -1), " to ", tail(inner, -1)),"> 20")
-bin_labels <- c("< -280",paste0(head(inner, -1), " to ", tail(inner, -1)),"> 280")
+#####################
+
+inner_sp  <- c(-20,-15,-10,-5,-1,0,1,5,10,15,20) # per species
+spp_breaks <- c(-Inf, inner_sp, Inf)
+spp_labels <- c("< -20",paste0(head(inner_sp, -1), " to ", tail(inner_sp, -1)),"> 20")
+
+inner_all  <- c(-280,-140,-70,-30,-15,0,15,30,70,140,280) # species sum
+all_breaks <- c(-Inf, inner_all, Inf)
+all_labels <- c("< -280",paste0(head(inner_all, -1), " to ", tail(inner_all, -1)),"> 280")
+
 # assign labels to colours ----
-pal <- setNames(vik3[1:12], bin_labels)
+spp_pal <- setNames(vik3[1:12], spp_labels)
+all_pal <- setNames(vik3[1:12], all_labels)
 
 ### Formatting ---------
 indicator<-c("Very old forest","Old forest","Deciduous forest","Low Cover","Mature forest","Mixedwood forest","Conifer forest","All Forest", "All.csv")
 canback<-can%>%st_crop(ext(prov))
 cbbox <- st_bbox(canback)
 
-######### Plot Mean % change ##########
-######### Toggle between absolute and per species ###############
-j=8
+##################################################
+## 1) Plot Change in abundance (birds/km2)
+###############################################
+
+# bring in indicator -----
 for (j in c(1:9)){
 name<-indicator[j]
 
-file_list_s <- list.files(root, pattern = "\\.csv$")%>%.[.%like% "IndicatorMeanDensityChange"]%>%.[.%like% name]
-if(length(file_list_s)>17){print("Too many layers!")}
-df <- map_df(file.path(root, file_list_s), ~ {
-  read_csv(.x, show_col_types = FALSE) %>% 
-    mutate(spatial_id = as.character(spatial_id))
-})
+# bring in each region----
+df10<-df8<-list()
 
-#-------------------------------------------------------
-# Return weighted average for overlapping BCR watersheds
-#-------------------------------------------------------
+###### Put together the BCR level groups 
 
-# weighted density
-df$wsds=df$m_sds*df$total_pixels
-df$wy90=df$m_y90*df$total_pixels
+for(i in c(2:16)){
+  w10.i<-w10_bcr%>%filter(subUnit==bcrlist[i]) # just the appropriate watersheds....
+  w8.i<-w8_bcr%>%filter(subUnit==bcrlist[i])
 
-# Mean per species weighted density ------------------------
-df$pspm<-df$wsds/df$nspp 
-df$psy90<-df$wy90/df$nspp
+filename<- list.files(root, pattern = "\\.csv$")%>%.[.%like% "IndicatorMeanDensityChange"]%>%
+  .[.%like% name]%>%
+  .[.%like% bcrlist[i]]
 
-clean_df<- df[c("spatial_level","spatial_id","total_pixels","wsds","wy90","pspm","psy90","sig")]%>%
-  group_by(spatial_id,spatial_level) %>%
-  summarize(weight=sum(total_pixels,na.rm=T),
-            swsds=sum(wsds,na.rm=T),
-            swy90=sum(wy90,na.rm=T),
-            pswsds=sum(pspm,na.rm=T),
-            pswy90=sum(psy90,na.rm=T),
-            sig=sum(sig,na.rm=T)) %>% ungroup()
+if(length(filename)>1){print("Too many layers!")
+  next}
+if(length(filename)==0) {print(paste("No data for",bcrlist[i]))
+                               next}
 
-# weighted average in birds /km2--------------
-clean_df$weight_sds=(clean_df$swsds/clean_df$weight)*100
-clean_df$weight_y90=(clean_df$swy90/clean_df$weight)*100
-clean_df$weight_pssds=(clean_df$pswsds/clean_df$weight)*100
-clean_df$weight_ps90=(clean_df$pswy90/clean_df$weight)*100
-
-# Select watershed -----------------
-wshd<-subset(clean_df,clean_df$spatial_level=="subbasin_Lev10")
-#wshd<-subset(clean_df,clean_df$spatial_level=="subbasin")
-sum(wshd$weight_y90*wshd$weight,na.rm=T)
-sum(wshd$weight_sds*wshd$weight,na.rm=T)
-63008137/1408065434
-View(wshd)
-# Get relevant layers and remove duplicates ---------------
-wshd<-wshd[c("spatial_level","spatial_id","weight_sds","weight_y90","weight_pssds","weight_ps90","sig")]%>%unique()
-
-# Check for duplicate watersheds -------------
-duplicates_df <- wshd[duplicated(wshd$spatial_id ) | duplicated(wshd$spatial_id , fromLast = TRUE), ] # where watersheds were split by BCR we have 2 estimates - need to change workflow - for now drop the smaller section
-if(nrow(duplicates_df)>0){stop("issue with duplicate values")}
+df <- read.csv(file.path(root, filename))
+df$m_sds<-ifelse(df$sig==0,NA,df$m_sds)  # sig=1 means significant now; 0= NS
 
 
-# Remove non-significant change -------
-wshd$weight_sds<-ifelse(wshd$sig>0,NA,wshd$weight_sds)
-wshd$weight_pssds<-ifelse(wshd$sig>0,NA,wshd$weight_pssds)
+df10[[i]]<- merge(w10.i,subset(df,df$spatial_level=="subbasin_Lev10"),by.x="HYBAS_ID",by.y="spatial_id", all.y=F) # only watersheds deemed in BCR by the st_join()
+df8[[i]]<-merge(w8.i,subset(df,df$spatial_level=="subbasin"),by.x="HYBAS_ID",by.y="spatial_id", all.y=F)
+} # end of BCRs
 
-# Merge with spatial  ---------------
-wshd<-merge(w10,wshd,by.x="HYBAS_ID",by.y="spatial_id")
-#wshd<-merge(w8,wshd,by.x="HYBAS_ID",by.y="spatial_id")
+df10out<-do.call(rbind,df10)
+df8out<-do.call(rbind,df8)
 
-# range formatting ----------------
-# 1. Calculate min, max, and the exact position of 0 on a 0-1 scale
-scaled_fill <- wshd$weight_pssds
-scaled_fill <- wshd$weight_sds
-summary(wshd)
-filltype="summed"
-#min_val <- min(scaled_fill, na.rm = TRUE)
-#max_val <- max(scaled_fill, na.rm = TRUE)
+##########################################################################
+# Plot Level 8 watersheds
+###########################################################################
 
-# 2. Create 5 bins for the negative side (ending at 0) 
-# and 5 bins for the positive side (starting at 0)
-#neg_breaks <- seq(min_val, 0, length.out = 7)
-#pos_breaks <- seq(0, max_val, length.out = 7)[-1] # Remove duplicate 0
-#all_breaks <- round(c(neg_breaks, pos_breaks),0)
+# total sums ------------
+scaled_fill <- df8out$m_sds*100
 
+df8out$all_bins <- cut(scaled_fill, breaks = all_breaks,
+                         labels = all_labels, include.lowest = TRUE)
 
-wshd$binned <- cut(scaled_fill, breaks = all_breaks,
-                         labels = bin_labels, include.lowest = TRUE)
+df8out$all_bins <- factor(ifelse(is.na(df8out$all_bins), "not sig.",
+                                   as.character(df8out$all_bins)),
+                            levels = c(all_labels, "not sig."))
 
-wshd$binned <- factor(ifelse(is.na(wshd$binned), "not sig.",
-                                   as.character(wshd$binned)),
-                            levels = c(bin_labels, "not sig."))
+# species mean ------
+spp_fill <- (df8out$m_sds*100)/df8out$nspp
+df8out$spp_bins <- cut(spp_fill, breaks = spp_breaks,
+                       labels = spp_labels, include.lowest = TRUE)
 
-#clean_wshd <- clean_wshd %>% 
-#  mutate(trend_strength = factor(trend_strength, levels = c( "Loss dominated (Strong)",
-#                                                             "Loss dominated (Moderate)",
-#                                                             "Loss dominated (Weak)",
-#                                                             "Stable",
-#                                                             "Equal loss/gain",
-#                                                             "Gain dominated (Weak)",
- #                                                            "Gain dominated (Moderate)",
-  #                                                           "Gain dominated (Strong)")
- # ))
+df8out$spp_bins <- factor(ifelse(is.na(df8out$spp_bins), "not sig.",
+                                 as.character(df8out$spp_bins)),
+                          levels = c(spp_labels, "not sig."))
 
 # Change in summed counts ------------------
 Per<-ggplot() +
 
   tidyterra::geom_spatraster_rgb(data=hillshade) +
   geom_sf(data = canback, fill = NA, color = "grey30",size =0.1) +
-  geom_sf(data = wshd, aes(fill = binned),color =NA,size =0.02, alpha = 1) + #trend_strength
+  geom_sf(data = df8out, aes(fill = all_bins),color =NA,size =0.02, alpha = 1) + #trend_strength
   scale_fill_manual(
-    values = c(pal, "not sig." = "#fff6cc"), #" grey85", 
+    values = c(all_pal, "not sig." = "#fff6cc"), #" grey85", 
     drop = TRUE,
     guide = guide_legend(override.aes = list(size = 3)) # Clean up legend markers
   ) +
   tidyterra::geom_spatraster_rgb(data=hillUSA) +
-  #geom_sf(data = burned, fill="black", color = "grey92", linewidth = 0.02, alpha = 1)+
   geom_sf(data = prov, fill=NA, colour="grey30",size =0.2) +
   geom_sf(data = Lakes, fill="#AFEEEE", colour="black",size =0.05) +
   geom_sf(data = River, fill=NA, colour="grey40",size =0.05) +
-  labs(title = paste0(name,": ", filltype," in birds/km2 (1990 vs 2020)"),fill = NULL) +
+  labs(title = paste0(name,": summed change in birds/km2 (1990 vs 2020)"),fill = NULL) +
   coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
                 ylim = c(cbbox["ymin"], cbbox["ymax"]), 
                 expand = FALSE) +
   theme_minimal() +
   theme(panel.background = element_rect(fill = "lightblue2", color = NA))
 
+# Save out image --------
+ggsave(paste0(name,"_CanadaWide_watershed8_SumPopChange.png"), Per, dpi = 400, width = 12, height = 7)
+
+
+# Change in per species counts ------------------
+Per<-ggplot() +
+  
+  tidyterra::geom_spatraster_rgb(data=hillshade) +
+  geom_sf(data = canback, fill = NA, color = "grey30",size =0.1) +
+  geom_sf(data = df8out, aes(fill = spp_bins),color =NA,size =0.02, alpha = 1) + #trend_strength
+  scale_fill_manual(
+    values = c(spp_pal, "not sig." = "#fff6cc"), #" grey85", 
+    drop = TRUE,
+    guide = guide_legend(override.aes = list(size = 3)) # Clean up legend markers
+  ) +
+  tidyterra::geom_spatraster_rgb(data=hillUSA) +
+  geom_sf(data = prov, fill=NA, colour="grey30",size =0.2) +
+  geom_sf(data = Lakes, fill="#AFEEEE", colour="black",size =0.05) +
+  geom_sf(data = River, fill=NA, colour="grey40",size =0.05) +
+  labs(title = paste0(name,": mean change per species in birds/km2 (1990 vs 2020)"),fill = NULL) +
+  coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
+           ylim = c(cbbox["ymin"], cbbox["ymax"]), 
+           expand = FALSE) +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "lightblue2", color = NA))
 
 # Save out image --------
-#ggsave(paste0(name,"_CanadaWide_watershed8_MeanPopChange.png"), Per, dpi = 400, width = 12, height = 7)
-#ggsave(paste0(name,"_CanadaWide_watershed10_MeanPopChange.png"), Per, dpi = 500, width = 12, height = 7)
-#ggsave(paste0(name,"_CanadaWide_watershed8_SumPopChange.png"), Per, dpi = 400, width = 12, height = 7)
+ggsave(paste0(name,"_CanadaWide_watershed8_MeanPopChange.png"), Per, dpi = 400, width = 12, height = 7)
+
+####################### Done level 8 #########################################
+
+#####################
+# Level 10 watersheds
+#####################
+
+# total sums ------------
+scaled_fill <- df10out$m_sds*100
+
+df10out$all_bins <- cut(scaled_fill, breaks = all_breaks,
+                       labels = all_labels, include.lowest = TRUE)
+
+df10out$all_bins <- factor(ifelse(is.na(df10out$all_bins), "not sig.",
+                                 as.character(df10out$all_bins)),
+                          levels = c(all_labels, "not sig."))
+
+# species mean ------
+spp_fill <- (df10out$m_sds*100)/df10out$nspp
+df10out$spp_bins <- cut(spp_fill, breaks = spp_breaks,
+                       labels = spp_labels, include.lowest = TRUE)
+
+df10out$spp_bins <- factor(ifelse(is.na(df10out$spp_bins), "not sig.",
+                                 as.character(df10out$spp_bins)),
+                          levels = c(spp_labels, "not sig."))
+
+# Change in summed counts ------------------
+Per<-ggplot() +
+  
+  tidyterra::geom_spatraster_rgb(data=hillshade) +
+  geom_sf(data = canback, fill = NA, color = "grey30",size =0.1) +
+  geom_sf(data = df10out, aes(fill = all_bins),color =NA,size =0.02, alpha = 1) + #trend_strength
+  scale_fill_manual(
+    values = c(all_pal, "not sig." = "#fff6cc"), #" grey85", 
+    drop = TRUE,
+    guide = guide_legend(override.aes = list(size = 3)) # Clean up legend markers
+  ) +
+  tidyterra::geom_spatraster_rgb(data=hillUSA) +
+  geom_sf(data = prov, fill=NA, colour="grey30",size =0.2) +
+  geom_sf(data = Lakes, fill="#AFEEEE", colour="black",size =0.05) +
+  geom_sf(data = River, fill=NA, colour="grey40",size =0.05) +
+  labs(title = paste0(name,": summed change in birds/km2 (1990 vs 2020)"),fill = NULL) +
+  coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
+           ylim = c(cbbox["ymin"], cbbox["ymax"]), 
+           expand = FALSE) +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "lightblue2", color = NA))
+
+# Save out image --------
 ggsave(paste0(name,"_CanadaWide_watershed10_SumPopChange.png"), Per, dpi = 400, width = 12, height = 7)
-gc()
+
+# Change in per species counts ------------------
+Per<-ggplot() +
+  
+  tidyterra::geom_spatraster_rgb(data=hillshade) +
+  geom_sf(data = canback, fill = NA, color = "grey30",size =0.1) +
+  geom_sf(data = df10out, aes(fill = spp_bins),color =NA,size =0.02, alpha = 1) + #trend_strength
+  scale_fill_manual(
+    values = c(spp_pal, "not sig." = "#fff6cc"), #" grey85", 
+    drop = TRUE,
+    guide = guide_legend(override.aes = list(size = 3)) # Clean up legend markers
+  ) +
+  tidyterra::geom_spatraster_rgb(data=hillUSA) +
+  geom_sf(data = prov, fill=NA, colour="grey30",size =0.2) +
+  geom_sf(data = Lakes, fill="#AFEEEE", colour="black",size =0.05) +
+  geom_sf(data = River, fill=NA, colour="grey40",size =0.05) +
+  labs(title = paste0(name,": mean change per species in birds/km2 (1990 vs 2020)"),fill = NULL) +
+  coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
+           ylim = c(cbbox["ymin"], cbbox["ymax"]), 
+           expand = FALSE) +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "lightblue2", color = NA))
+
+# Save out image --------
+ggsave(paste0(name,"_CanadaWide_watershed10_MeanPopChange.png"), Per, dpi = 400, width = 12, height = 7)
+
+############### Done level 10 watersheds ##############
+
+} #stop here for now
+
+
+
+##################################################
+## 2) Plot directionality (sig +/- in abundance)
+###############################################
+
+# bring in indicator -----
+for (j in c(1:9)){
+  name<-indicator[j]
+  
+  # bring in each region----
+  df10<-df8<-list()
+  
+  ###### Put together the BCR level groups 
+  
+  for(i in c(1:16)){
+    w10.i<-w10_bcr%>%filter(subUnit==bcrlist[i]) # just the appropriate watersheds....
+    w8.i<-w8_bcr%>%filter(subUnit==bcrlist[i])
+    
+    filename<- list.files(root, pattern = "\\.csv$")%>%.[.%like% "IndicatorChange_"]%>%
+      .[.%like% name]%>%
+      .[.%like% bcrlist[i]]
+    
+    if(length(filename)>1){print("Too many layers!")
+      next}
+    if(length(filename)==0) {print(paste("No data for",bcrlist[i]))
+      next}
+    
+    df <- read.csv(file.path(root, filename))
+
+    df10[[i]]<- merge(w10.i,subset(df,df$spatial_level=="subbasin_Lev10"),by.x="HYBAS_ID",by.y="spatial_id", all.y=F) # only watersheds deemed in BCR by the st_join()
+    df8[[i]]<-merge(w8.i,subset(df,df$spatial_level=="subbasin"),by.x="HYBAS_ID",by.y="spatial_id", all.y=F)
+  } # end of BCRs
+  
+  df10out<-do.call(rbind,df10)
+  df8out<-do.call(rbind,df8)
+  
+  ##########################################################################
+  # Plot Level 8 watersheds
+  ###########################################################################
+
+  # Recalculate diffusion index to be sure  ------------------
+  df8out$diffInd = (df8out$inc + (0.5* df8out$ns))/(df8out$inc + df8out$ns +df8out$dec)
+  
+  Diffus<-ggplot() +
+    tidyterra::geom_spatraster_rgb(data=hillshade) +
+    geom_sf(data = canback, fill = NA, color = "grey30",size =0.1) +
+    geom_sf(data = df8out, aes(fill = diffInd), color =NA, alpha = 0.9) + #trend_strength
+    scale_fill_gradientn(colours=vik2, na.value = "#fff6cc", limits = c(0,1)) +
+    tidyterra::geom_spatraster_rgb(data=hillUSA) +  
+    geom_sf(data = prov, fill=NA, colour="grey30",size =0.2) +
+    geom_sf(data = Lakes, fill="#AFEEEE", colour="black",size =0.05) +
+    geom_sf(data = River, fill=NA, colour="grey40",size =0.05) +
+    labs(title = paste0(name," species: diffusion index (1990 vs 2020)"),fill = NULL) +
+    coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
+             ylim = c(cbbox["ymin"], cbbox["ymax"]), 
+             expand = FALSE) +
+    theme_minimal() +
+    theme(panel.background = element_rect(fill = "lightblue2", color = NA))
+  
+  # Save out image --------
+  ggsave(paste0(name,"_CanadaWide_watershed8_DiffusionIndex.png"), Per, dpi = 400, width = 12, height = 7)
+  
+
+  # Recalculate diffusion index to be sure  ------------------
+  df10out$diffInd = (df10out$inc + (0.5* df10out$ns))/(df10out$inc + df10out$ns +df10out$dec)
+  
+  Diffus<-ggplot() +
+    tidyterra::geom_spatraster_rgb(data=hillshade) +
+    geom_sf(data = canback, fill = NA, color = "grey30",size =0.1) +
+    geom_sf(data = df8out, aes(fill = diffInd), color =NA, alpha = 0.9) + #trend_strength
+    scale_fill_gradientn(colours=vik2, na.value = "#fff6cc", limits = c(0,1)) +
+    tidyterra::geom_spatraster_rgb(data=hillUSA) +  
+    geom_sf(data = prov, fill=NA, colour="grey30",size =0.2) +
+    geom_sf(data = Lakes, fill="#AFEEEE", colour="black",size =0.05) +
+    geom_sf(data = River, fill=NA, colour="grey40",size =0.05) +
+    labs(title = paste0(name," species: diffusion index (1990 vs 2020)"),fill = NULL) +
+    coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
+             ylim = c(cbbox["ymin"], cbbox["ymax"]), 
+             expand = FALSE) +
+    theme_minimal() +
+    theme(panel.background = element_rect(fill = "lightblue2", color = NA))
+  
+  # Save out image --------
+  ggsave(paste0(name,"_CanadaWide_watershed10_DiffusionIndex.png"), Per, dpi = 400, width = 12, height = 7)
+
+  
+} #stop here for now
+
+
+
+
+
 
 
 # Baseline high and low density areas ------------------
@@ -604,6 +770,10 @@ canada61<-ggplot() +
   coord_sf(xlim = c(cbbox["xmin"], cbbox["xmax"]), 
            ylim = c(cbbox["ymin"], cbbox["ymax"]), expand = FALSE) +
   theme(panel.background = element_rect(fill = "grey40", color = NA))+ theme_minimal()
+
+plot(canada61)
+ggsave(file.path(root1,"BCR81.png"), canada61, dpi = 300, width = 12, height = 7)
+
 
 plot(canada61)
 ggsave(file.path(root1,"BCR81.png"), canada61, dpi = 300, width = 12, height = 7)
